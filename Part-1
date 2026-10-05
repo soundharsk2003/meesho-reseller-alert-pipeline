@@ -1,0 +1,139 @@
+Part 1 — SQL Business Query Engine (25 marks)
+Meesho's reseller-ops analyst needs a repeatable set of SQL queries against a reseller/order dataset. You will generate the dataset yourself with a fixed, seeded script (so your numbers match the acceptance criteria below exactly), then write SQL that answers five standing business questions. Part 2 and Part 4 both consume this Part's output directly, so get the numbers exactly right before moving on.
+
+1.1 — Generate the dataset
+Create a data/ folder in your repository. Paste the script below verbatim into data/generate_dataset.py and run it with no changes to the seed, weights, or row counts — every acceptance criterion in this brief was computed from this exact script's output, so any change to it will make your numbers diverge from the grader's.
+
+import random
+import sqlite3
+import csv
+import os
+
+rng = random.Random(42)
+OUTDIR = os.path.dirname(os.path.abspath(__file__))
+
+REGIONS = ["North", "South", "East", "West"]
+CITIES = {
+    "North": ["Delhi", "Jaipur", "Lucknow"],
+    "South": ["Bengaluru", "Chennai", "Hyderabad"],
+    "East": ["Kolkata", "Patna", "Bhubaneswar"],
+    "West": ["Mumbai", "Pune", "Ahmedabad"],
+}
+CATEGORIES = ["Ethnic Wear", "Western Wear", "Kids Wear", "Home & Kitchen", "Beauty & Personal Care"]
+CAT_PRICE_RANGE = {
+    "Ethnic Wear": (399, 1499), "Western Wear": (349, 1299), "Kids Wear": (249, 899),
+    "Home & Kitchen": (199, 1999), "Beauty & Personal Care": (149, 799),
+}
+STATUSES = ["Delivered", "Returned", "Cancelled", "Pending"]
+STATUS_WEIGHTS = [0.70, 0.15, 0.10, 0.05]
+MONTHS = ["April", "May", "June"]
+MONTH_DAYS = {"April": 30, "May": 31, "June": 30}
+
+resellers = []
+rid_counter = 1
+for region in REGIONS:
+    for i in range(6):
+        rid = f"RS{rid_counter:03d}"
+        city = CITIES[region][i % 3]
+        join_month = rng.choice(["2026-01", "2026-02", "2026-03"])
+        join_date = f"{join_month}-{rng.randint(1,28):02d}"
+        resellers.append({"reseller_id": rid, "reseller_name": f"{city} Reseller {i+1}",
+                           "city": city, "region": region, "join_date": join_date})
+        rid_counter += 1
+
+ZERO_ORDER_RESELLER = resellers[-1]["reseller_id"]
+order_pool_resellers = [r for r in resellers if r["reseller_id"] != ZERO_ORDER_RESELLER]
+
+CAT_WEIGHTS_BY_MONTH = {
+    "April": {"Ethnic Wear": 0.20, "Western Wear": 0.24, "Kids Wear": 0.20, "Home & Kitchen": 0.20, "Beauty & Personal Care": 0.16},
+    "May":   {"Ethnic Wear": 0.34, "Western Wear": 0.20, "Kids Wear": 0.16, "Home & Kitchen": 0.14, "Beauty & Personal Care": 0.16},
+    "June":  {"Ethnic Wear": 0.18, "Western Wear": 0.22, "Kids Wear": 0.20, "Home & Kitchen": 0.22, "Beauty & Personal Care": 0.18},
+}
+ORDERS_PER_MONTH = 300
+
+orders = []
+oid_counter = 1
+for month in MONTHS:
+    cats = list(CAT_WEIGHTS_BY_MONTH[month].keys())
+    weights = list(CAT_WEIGHTS_BY_MONTH[month].values())
+    for _ in range(ORDERS_PER_MONTH):
+        reseller = rng.choice(order_pool_resellers)
+        category = rng.choices(cats, weights=weights, k=1)[0]
+        lo, hi = CAT_PRICE_RANGE[category]
+        unit_price = round(rng.uniform(lo, hi), 2)
+        quantity = rng.choices([1, 2, 3, 4], weights=[0.55, 0.25, 0.13, 0.07], k=1)[0]
+        day = rng.randint(1, MONTH_DAYS[month])
+        order_date = f"2026-{MONTHS.index(month)+4:02d}-{day:02d}"
+        status = rng.choices(STATUSES, weights=STATUS_WEIGHTS, k=1)[0]
+        orders.append({"order_id": f"ORD{oid_counter:05d}", "reseller_id": reseller["reseller_id"],
+                        "category": category, "product_name": f"{category} Item {rng.randint(1,999)}",
+                        "quantity": quantity, "unit_price": unit_price, "order_date": order_date,
+                        "month": month, "status": status})
+        oid_counter += 1
+
+with open(os.path.join(OUTDIR, "resellers.csv"), "w", newline="") as f:
+    w = csv.DictWriter(f, fieldnames=["reseller_id", "reseller_name", "city", "region", "join_date"])
+    w.writeheader(); w.writerows(resellers)
+
+with open(os.path.join(OUTDIR, "orders.csv"), "w", newline="") as f:
+    w = csv.DictWriter(f, fieldnames=["order_id", "reseller_id", "category", "product_name",
+                                       "quantity", "unit_price", "order_date", "month", "status"])
+    w.writeheader(); w.writerows(orders)
+
+db_path = os.path.join(OUTDIR, "meesho_reseller.db")
+if os.path.exists(db_path):
+    os.remove(db_path)
+conn = sqlite3.connect(db_path)
+cur = conn.cursor()
+cur.execute("""CREATE TABLE resellers (reseller_id TEXT PRIMARY KEY, reseller_name TEXT,
+               city TEXT, region TEXT, join_date TEXT)""")
+cur.execute("""CREATE TABLE orders (order_id TEXT PRIMARY KEY, reseller_id TEXT, category TEXT,
+               product_name TEXT, quantity INTEGER, unit_price REAL, order_date TEXT,
+               month TEXT, status TEXT,
+               FOREIGN KEY (reseller_id) REFERENCES resellers(reseller_id))""")
+cur.executemany("INSERT INTO resellers VALUES (:reseller_id,:reseller_name,:city,:region,:join_date)", resellers)
+cur.executemany("""INSERT INTO orders VALUES (:order_id,:reseller_id,:category,:product_name,
+                    :quantity,:unit_price,:order_date,:month,:status)""", orders)
+conn.commit()
+conn.close()
+print(f"Wrote {len(resellers)} resellers and {len(orders)} orders. Zero-order reseller: {ZERO_ORDER_RESELLER}")
+Running it produces data/resellers.csv (24 rows), data/orders.csv (900 rows: 300 each for April, May, June 2026), and data/meesho_reseller.db (a SQLite database with resellers and orders tables, same data).
+
+1.2 — Write and run the queries
+Using sqlite3 (from a .sql file, or Python's sqlite3 module — either approach is acceptable), write queries for all five of the following and save each result as a CSV under part1_sql/output/:
+
+Monthly revenue by category — GROUP BY month, category, computing revenue = SUM(quantity * unit_price) rounded to 2 decimals, plus n_orders = COUNT(*). Save as part1_sql/output/monthly_category_revenue.csv with columns month,category,revenue,n_orders. This file is also the direct input to Part 2 and Part 4 — keep the exact column names.
+Region-wise total revenue and order count — JOIN orders to resellers on reseller_id, GROUP BY region.
+Top resellers by total spend — JOIN, GROUP BY reseller_id, HAVING total_spend > 50000, ordered by spend descending, LIMIT 5.
+Resellers who have never placed an order — a LEFT JOIN (or NOT IN subquery) identifying reseller(s) with zero matching order rows. Then, separately, run a query that groups the LEFT JOIN result by reseller_id and reports both COUNT(*) and COUNT(order_id) for that specific reseller, to demonstrate why COUNT(*) cannot be used to detect the zero-match case (it counts the single all-NULL unmatched row as 1, not 0).
+Average Order Value (AOV) for June, Delivered orders only — SUM(quantity * unit_price) / COUNT(*) restricted to month = 'June' AND status = 'Delivered'.
+Acceptance criteria (exact values from the seeded dataset — your output must match)
+part1_sql/output/monthly_category_revenue.csv has exactly 15 rows and matches:
+
+month	category	revenue	n_orders
+April	Ethnic Wear	104520.77	64
+April	Western Wear	113866.15	79
+April	Kids Wear	59847.27	55
+April	Home & Kitchen	100446.23	53
+April	Beauty & Personal Care	40737.01	49
+May	Ethnic Wear	185107.61	104
+May	Western Wear	86998.18	64
+May	Kids Wear	45793.78	47
+May	Home & Kitchen	91152.57	44
+May	Beauty & Personal Care	35542.11	41
+June	Ethnic Wear	76371.53	52
+June	Western Wear	97415.64	66
+June	Kids Wear	56737.78	57
+June	Home & Kitchen	129971.22	73
+June	Beauty & Personal Care	37559.07	52
+Region-wise revenue: North = INR 337125.46 (231 orders), West = INR 333106.33 (232 orders), South = INR 316736.68 (216 orders), East = INR 275098.45 (221 orders). These four sum exactly to the grand total below.
+
+Grand total revenue across all 900 orders, all months = INR 1262066.92.
+
+Resellers with total_spend > 50000 (5 rows, descending): RS019 "Mumbai Reseller 1" = INR 75295.09; RS022 "Mumbai Reseller 4" = INR 73882.33; RS012 "Hyderabad Reseller 6" = INR 69936.46; RS006 "Lucknow Reseller 6" = INR 64238.97; RS005 "Jaipur Reseller 5" = INR 61825.02.
+
+Exactly one reseller has never placed an order: RS024, "Ahmedabad Reseller 6", region West. Your LEFT JOIN query must return exactly this one row and no others.
+
+For RS024 specifically, the LEFT JOIN-grouped query must report COUNT(*) = 1 and COUNT(order_id) = 0 in the same row — your written explanation (in part1_sql/output/README.md or inline SQL comments) must state explicitly that this is why COUNT(*) is the wrong way to test for a zero-match LEFT JOIN row.
+
+AOV for June, Delivered orders only = INR 1267.69.
